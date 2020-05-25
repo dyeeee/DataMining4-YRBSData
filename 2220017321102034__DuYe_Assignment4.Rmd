@@ -1,0 +1,274 @@
+---
+title: "STATS369 Assignment4"
+author: "222017321102034 DuYe"
+date: "5/10/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+library(xgboost)
+library(Matrix)
+library(caret)
+library(ggplot2)
+library(DALEX)
+library(dplyr)
+```
+
+## Task 1: Build a classifier to predict labels `r` from `x` with xgboost, and show the confusion matrix
+```{r}
+load("./AS4_datasets/yrbs-1.rda")
+```
+Loading data source from file.
+
+```{r}
+yrbs.df = data.frame(x)
+yrbs.df$r = r
+```
+Converting data into dataframe and add response variable **r**.
+
+### Clean NAs from ethnicity labels but not elsewhere
+```{r}
+yrbs.df  <- yrbs.df[complete.cases(yrbs.df[,95]),]
+```
+
+```{r}
+# XGBoost data predeal
+
+set.seed(123)
+index=sample(2,nrow(yrbs.df),replace = T,prob = c(0.7,0.3))
+train.df<-yrbs.df[index==1,]
+test.df<-yrbs.df[index==2,]
+
+# Data preprocessing of train set
+# Convert variable to matrix
+train.var.mat <- data.matrix(train.df[,c(1:94)]) 
+# Using the Matrix function, set the sparse parameter to TRUE and convert it to a sparse matrix
+train.var.spmat <- Matrix(train.var.mat,sparse=T) 
+train.label <- train.df[,95]
+# Splice the independent and dependent variables into a list
+train.mat <- list(data=train.var.mat,label=train.label) 
+# Construct the xgb.DMatrix object needed by the model
+train.xgbmat <- xgb.DMatrix(data = train.mat$data, label = train.mat$label) 
+
+# Data preprocessing of test set
+test.var.mat <- data.matrix(test.df[,c(1:94)]) 
+test.var.spmat <- Matrix(test.var.mat,sparse=T) 
+test.label <- test.df[,95]
+test.mat <- list(data=test.var.mat,label=test.label) 
+test.xgbmat <- xgb.DMatrix(data = test.mat$data, label = test.mat$label) 
+```
+
+Prepare the data object fro XGBoost.
+
+###  Use cross validation to find best value of nrounds 
+```{r}
+param <- list(max_depth=6, 
+              eta=0.5,  
+              objective="multi:softmax",
+              num_class = 8,
+              nthread = 3)
+
+xgbcv <- xgb.cv(
+  data = train.xgbmat,
+  params = param,
+  nfold = 5,
+  nround = 30,
+  # L1 norm
+  alpha=1)
+```
+
+After doing cross-validation, nround = 30 get the best result. 
+
+### Choose and fit full model
+```{r}
+param <- list(max_depth=6, 
+              eta=0.5,  
+              objective="multi:softmax",
+              num_class = 8,
+              nthread = 3)
+
+xgb <- xgboost(
+  data = train.xgbmat,
+  params = param,
+  nround= 30,
+  # L1 norm
+  alpha=1)
+```
+
+### display confusion matrix and calculate accuracy
+```{r}
+pre_xgb = predict(xgb,test.xgbmat)
+pre_xgb = factor(pre_xgb,levels = c(0,1,2,3,4,5,6,7))
+# confusionMatrix
+confusionMatrix(table(pre_xgb,test.mat$label,dnn=c("actual","pred")))
+```
+
+The total accuracy of these model is just 53.7%, not very ideal but acceptable for a unevenly distributed data sets. The detailed criteria of these model are showed.
+
+### variable importance - plots.
+```{r}
+model <- xgb.dump(xgb,with_stats = T) # Show calculation process, view tree structure
+# model 
+names <- dimnames(data.matrix(train.df[,c(1:94)]))[[2]] # names of variables
+importance_matrix <- xgb.importance(names,model=xgb) # importance
+
+xgb.plot.importance(importance_matrix[1:8,])
+# Weight / Frequency: The number of times the variable is used as a partition variable in all trees
+# Gain: The variable is used as the average gain after dividing the variable
+# Coverage: Variable importance uses the variable as the dividing variable to cover the sample
+
+# SHAP importance
+shap1 = xgb.plot.shap(model=xgb, data=as.matrix(train.df[,1:94]),top_n=8,n_col=4)
+```
+
+Using **xgb.plot.importance** function and **xgb.plot.shap** to get two type of importance for these  model. Most of the variables are the same, they give most contribution for the model.
+
+## Task 3: Describe and display the relationships between the most important variables and the label categories -- which category/categories is each of the most important variables useful for predicting? Can you produce a summary of the most distinctive predictors for each label category?
+
+```{r}
+# Normalization
+table(yrbs.df$r)
+total_ppl = sum(table(yrbs.df$r))
+r0_ppl = table(yrbs.df$r)[1]
+r1_ppl = table(yrbs.df$r)[2]
+r2_ppl = table(yrbs.df$r)[3]
+r3_ppl = table(yrbs.df$r)[4]
+r4_ppl = table(yrbs.df$r)[5]
+r5_ppl = table(yrbs.df$r)[6]
+r6_ppl = table(yrbs.df$r)[7]
+r7_ppl = table(yrbs.df$r)[8]
+
+r0_prop = r0_ppl/total_ppl
+r1_prop = r1_ppl/total_ppl
+r2_prop = r2_ppl/total_ppl
+r3_prop = r3_ppl/total_ppl
+r4_prop = r4_ppl/total_ppl
+r5_prop = r5_ppl/total_ppl
+r6_prop = r6_ppl/total_ppl
+r7_prop = r7_ppl/total_ppl
+
+factor_question_plot<-function(label,q){
+  t = table(label, q, dnn = c("r","q"))
+  t[1,] = t[1,]/r0_prop
+  t[2,] = t[2,]/r1_prop
+  t[3,] = t[3,]/r2_prop
+  t[4,] = t[4,]/r3_prop
+  t[5,] = t[5,]/r4_prop
+  t[6,] = t[6,]/r5_prop
+  t[7,] = t[7,]/r6_prop
+  t[8,] = t[8,]/r7_prop
+  
+  t = as.data.frame(t)
+  
+  return(ggplot(data=t,mapping=aes(x=factor(q),y=Freq,fill = r))+
+    geom_bar(stat ="identity",width = 0.6, position = "dodge") )
+}
+```
+
+Due to the inconsistency in the number of samples in different categories in the data set, the proportion of the observed pictures of the results is lacking in statistical significance. So I define a normalization function to normalize the frequency of samples.
+
+In the following plots, the samples of each category are scaled to a uniform scale for comparison, such a plot can meaningfully compare the ability of each problem to distinguish each category.
+
+```{r,fig.width=8, fig.height=4}
+# Q97 During the past 12 months, how many times have you had a sunburn? 
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q97 ) +
+    labs(title = " Q97 How many times have you had a sunburn? \n(level: 1-6 (0-5 more times))", x = "q97 ans", y = "Norm Freq") 
+```
+
+Q97,this is the most important question in the model. Regarding the situation of sunburn, it can be clearly seen on the way that people in category 4 are more often sunburned. I think this is also an important reason for this problem, because it can get a very obvious relationship: if a person is sunburned more often, he has lots posibility to be category 4.
+
+```{r,fig.width=8, fig.height=4}
+# Q7 How much do you weigh without your shoes on? (Note: Data are in kilograms.)
+tmp.df = train.df %>% filter(!is.na(q7))
+qplot(r,q7,data = tmp.df ,geom= "boxplot", fill = factor(r)) +
+    labs(title = "Q7 How much do you weigh without your shoes on? (kilograms.)", x = "race", y = "q7 ans")
+```
+Q7, regarding the issue of weight, it can be seen here that the body weight of the people in category 2 is significantly lower than that of people in other categories. This question should be of great significance to the classification of category 2.
+
+
+```{r,fig.width=8, fig.height=4}
+# Q9 How often do you wear a seat belt when riding in a car driven by someone else?
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q9)  +
+    labs(title = "Q9 How often do you wear a seat belt? \n(level: 1-5 (never - always))", x = "q9 ans", y = "Norm Freq")
+```
+Q9, How often do you wear a seat belt? People in category 2 seem to use seat belts less frequently, in contrast, people in category 1 always use seat belts
+
+
+```{r,fig.width=8, fig.height=4}
+# Q8 When you rode a bicycle during the past 12 months, how often did you wear a helmet? 
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q8 ) +
+    labs(title = "Q8 How often did you wear a helmet? \n(level: 1-6 (not ride, never wore - always wore))", x = "q8 ans", y = "Norm Freq")
+```
+Q8, wear a helmet. People who always wear helmets while riding are mainly people in category 2 and category 4.
+
+```{r,fig.width=8, fig.height=4}
+# Q99 How well do you speak English?
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q99 ) +
+    labs(title = "Q99 How well do you speak English? \n(level: 1-4 (very well - not at all))", x = "q99 ans", y = "Norm Freq")
+```
+Q99, English level, obviously, people in category 0 and category 4 are more likely to speak English well, while people in category 4 seem to have a relatively low level of English
+
+```{r,fig.width=8, fig.height=4}
+# Q89 During the past 12 months, how would you describe your grades in school?
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q89 ) +
+    labs(title = "Q89 How would you describe your grades? \n(level: 1-7 (A-F,none,not sure))", x = "q89 ans", y = "Norm Freq")
+```
+
+Q89, People in category 2 have relatively best grade.
+
+```{r,fig.width=8, fig.height=4}
+# Q81 On an average school day, how many hours do you watch TV?
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q89 ) +
+    labs(title = "Q81 How many hours do you watch TV? \n(level: 1-7 (do not watch - 5 more hours))", x = "q81 ans", y = "Norm Freq") 
+```
+Q81, People in categories 1 and 4 will have less time to watch TV.  People in categories 0, seems have a special pattern of watching TV.
+
+```{r,fig.width=8, fig.height=4}
+# Q78 During the past 7 days, how many glasses of milk did you drink?
+factor_question_plot(label = yrbs.df$r, q = yrbs.df$q78 ) +
+    labs(title = "Q78 how many glasses of milk did you drink? \n(level: 1-7 (do not drink - 4 more glasses))", x = "q78 ans", y = "Norm Freq") 
+```
+
+Q78, People in category 2 obviously drink less milk.
+
+
+###  fit model for each class and get top variables.
+```{r,results='hide'}
+# Top variables
+top_vars = list()
+
+find_topvars = function(rlist){
+  for(i in c(0:7)){
+    ri_train.label = case_when(train.label == i ~ TRUE, train.label !=i ~ FALSE)
+    ri_test.label = case_when(test.label == i ~ TRUE, test.label != i ~ FALSE)
+    train.mat$label = ri_train.label
+    train.xgbmat <- xgb.DMatrix(data = train.mat$data, label = train.mat$label)
+    xgb_races = xgboost(data = train.xgbmat, max_depth=6, eta=0.5,  objective='binary:logistic', nround=30, alpha=1)
+    rlist[i+1] = xgb.importance(model = xgb_races)[1]
+  }
+  return(unlist(rlist))
+}
+top_vars = find_topvars(top_vars)
+
+```
+
+Here I use a function **find_topvars**, this function in turn converts the original multi-classification label into a specific race's two-category label, and builds eight two-category XGBoost models. Then I extracted the most important variables of each model. These variables contribute the most to the xgb model that distinguishes each category individually. 
+
+```{r}
+top_vars
+```
+
+For race 0-7, "q7"  "q7"  "q97" "q81" "q97" "q97" "q7"  "q7"  are the most important variables for each. This is consistent with the first most important variables of the 8-multi-classification model, and it can also be verified with the above picture scale analysis.  For example, people in categories 2 and categories 4 seem to be the least likely to be sunburned and the most vulnerable to sunburn, and the problem of q97 is the most important variable for distinguishing both 2 and 4.
+
+## Task 4:  Comment on whether (or not) task 3 would be ethically problematic if intended to be published, and for what reasons.
+
+I think the publish of Task 3 will cause some problems.
+
+First of all, the accuracy of distinguishing races based on only a few questions is very low, and the important variables in task three are only from the statistical level to see some effects. The XGBoost model combines nearly a hundred questions to find out the relationship between different races. Relying only on the intuitive judgment of some problems, obviously the effect is very poor.
+
+What is more important is the ethically issue. If we directly use some of the variables in Task 3, we will actually use prejudice and a fixed impression to distinguish between races and put a solid label on different races. In the long run, this is actually a kind of discrimination, because each race may have some differences due to custom culture, but it is wrong to judge a person's race based solely on these differences. We can distinguish through a complete questionnaire, but we should not say what a certain person is be or tagging a certain race.
+
+
+
+
